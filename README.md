@@ -20,21 +20,21 @@ This project integrates leading OSS tools for monitoring (Prometheus, Grafana, A
 ```mermaid
 flowchart TD
   subgraph User
-    U1[User\n(Admin/DevOps)]
+    U1[User<br/>(Admin/DevOps)]
   end
 
   subgraph FastAPI_Monitor["FastAPI Monitor"]
-    FM1[Automatic thread\nTCP/HTTP/MongoDB checks]
+    FM1[Automatic thread<br/>TCP/HTTP/MongoDB checks]
     FM2[API /monitor]
   end
 
-  subgraph CP["Control Plane\n(CPController)"]
+  subgraph CP["Control Plane<br/>(CPController)"]
     CP1[Receives KO events]
     CP2[Recovery/Escalation]
   end
 
   subgraph Prometheus
-    PR1[Scrapes Exporters\n& Monitor]
+    PR1[Scrapes Exporters<br/>& Monitor]
     PR2[Alert Rules]
     PR3[Alertmanager]
   end
