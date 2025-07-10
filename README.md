@@ -16,25 +16,24 @@ This project integrates leading OSS tools for monitoring (Prometheus, Grafana, A
 ---
 
 ### 🗺️ Architecture Diagram
-
 ```mermaid
 flowchart TD
   subgraph User
-    U1[User<br/>(Admin/DevOps)]
+    U1[User<br>(Admin/DevOps)]
   end
 
-  subgraph FastAPI_Monitor["FastAPI Monitor"]
-    FM1[Automatic thread<br/>TCP/HTTP/MongoDB checks]
+  subgraph FastAPI_Monitor [FastAPI Monitor]
+    FM1[Automatic thread<br>TCP/HTTP/MongoDB checks]
     FM2[API /monitor]
   end
 
-  subgraph CP["Control Plane<br/>(CPController)"]
+  subgraph CP [Control Plane (CPController)]
     CP1[Receives KO events]
     CP2[Recovery/Escalation]
   end
 
   subgraph Prometheus
-    PR1[Scrapes Exporters<br/>& Monitor]
+    PR1[Scrapes Exporters<br>& Monitor]
     PR2[Alert Rules]
     PR3[Alertmanager]
   end
@@ -75,7 +74,6 @@ flowchart TD
   PO1 -- Manages --> Prometheus
   PO1 -- Manages --> RabbitMQ
 ```
-
 ---
 
 ### Features
