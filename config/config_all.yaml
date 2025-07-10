@@ -1,0 +1,58 @@
+# ===============================
+# Configurazione principale NAS Monitoring (SANITIZED PUBLIC VERSION)
+# ===============================
+
+# URL su cui è esposto Node Exporter (endpoint Prometheus-style)
+node_exporter_url: "http://YOUR_NODE_EXPORTER:9100/metrics"
+
+# Sezione metriche:
+# Puoi inserire "all" per raccogliere tutte le metriche disponibili,
+# oppure una lista di metriche esatte o pattern regex (es: ^node_cpu_.*_total$)
+metrics: "all"
+
+# Configurazione tentativi e delay per retry di operazioni critiche (es: richieste HTTP, RabbitMQ)
+retry:
+  attempts: 3        # Numero di tentativi
+  delay_seconds: 5   # Secondi di attesa tra un tentativo e l'altro
+
+# Soglie di anomalia: se una metrica supera questi valori, viene generato un alert
+anomaly_thresholds:
+  cpu_usage_percent: 90     # Alert se uso CPU sopra il 90%
+  memory_usage_percent: 90  # Alert se uso RAM sopra il 90%
+  disk_free_percent: 10     # Alert se spazio disco libero sotto il 10%
+
+# Configurazione MongoDB per la persistenza delle metriche (esempio con Atlas)
+mongodb:
+  uri: "${MONGODB_URI}"           # <--- Usa variabile d'ambiente o placeholder
+  database: "nas_metrics_rabbitmq"  # Nome database
+  collection_info: "metrics"        # Collection per metriche generali
+  collection_warning: "alerts"      # Collection per warning/alert
+
+# Configurazione RabbitMQ per la pubblicazione delle metriche
+rabbitmq:
+  host: "YOUR_RABBITMQ_HOST"     # Host RabbitMQ (es: rabbitmq, localhost, o IP privato)
+  port: 5672                     # Porta
+  username: "${RABBITMQ_USER}"   # <--- Usa variabile d'ambiente o placeholder
+  password: "${RABBITMQ_PASSWORD}" # <--- Usa variabile d'ambiente o placeholder
+  queue_info: "nas_metrics"      # Coda per metriche generali
+  queue_warning: "nas_warnings"  # Coda per warning/alert
+
+# Dettagli Node Exporter (per eventuali usi futuri)
+node_exporter:
+  host: "YOUR_NODE_EXPORTER"     # Host su cui gira Node Exporter
+  port: 9100                     # Porta
+  vpn_required: true             # Indica se è necessaria una VPN per raggiungerlo
+
+# Parametri del consumer RabbitMQ
+consumer:
+  poll_interval_seconds: 30  # Ogni quanti secondi interroga la coda
+  log_level: "INFO"          # Livello di log
+
+# Parametri del producer RabbitMQ
+producer:
+  push_interval_seconds: 60  # Ogni quanti secondi invia metriche
+  log_level: "INFO"          # Livello di log
+
+# ===============================
+# Aggiungi altre sezioni/configurazioni qui se servono
+# ===============================

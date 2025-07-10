@@ -1,0 +1,16 @@
+[Unit]
+Description=Metrics Consumer Python Service
+After=network.target openvpn-client@VPNConfig.service
+Requires=openvpn-client@VPNConfig.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu
+ExecStart=/usr/bin/python3 /home/ubuntu/metrics_consumer.py --config /home/ubuntu/config_consumer.yaml
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

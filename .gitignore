@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.pkl
+*.log
+
+# Virtualenv
+.venv/
+venv/
+ENV/
+env/
+
+# VSCode
+.vscode/
+.code-workspace
+
+# Test/coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Docker
+**/docker-compose*.yml
+**/Dockerfile
+.docker/
+docker-compose.override.yml
+
+# System
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Config
+config/*.secrets
+config/*.env
+*.env
+.env.*
+
+# MongoDB dumps/backups
+dump/
+*.bson
+*.json
+
+# Misc
+*.swp
+*.swo
