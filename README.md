@@ -19,60 +19,60 @@ This project integrates leading OSS tools for monitoring (Prometheus, Grafana, A
 ```mermaid
 flowchart TD
   subgraph User
-    U1[User<br>(Admin/DevOps)]
+    U1["User (Admin/DevOps)"]
   end
 
-  subgraph FastAPI_Monitor [FastAPI Monitor]
-    FM1[Automatic thread<br>TCP/HTTP/MongoDB checks]
-    FM2[API /monitor]
+  subgraph FastAPI
+    FM1["Automatic thread, TCP/HTTP/MongoDB checks"]
+    FM2["API /monitor"]
   end
 
-  subgraph CP [Control Plane (CPController)]
-    CP1[Receives KO events]
-    CP2[Recovery/Escalation]
+  subgraph CP
+    CP1["Receives KO events"]
+    CP2["Recovery/Escalation"]
   end
 
   subgraph Prometheus
-    PR1[Scrapes Exporters<br>& Monitor]
-    PR2[Alert Rules]
-    PR3[Alertmanager]
+    PR1["Scrapes Exporters & Monitor"]
+    PR2["Alert Rules"]
+    PR3["Alertmanager"]
   end
 
   subgraph Exporters
-    EX1[Node/MongoDB Exporter]
+    EX1["Node/MongoDB Exporter"]
   end
 
   subgraph RabbitMQ
-    RM1[Event/metrics queues]
-    RM2[Producer/Consumer Python]
+    RM1["Event/metrics queues"]
+    RM2["Producer/Consumer Python"]
   end
 
   subgraph Grafana
-    GF1[Dashboards]
+    GF1["Dashboards"]
   end
 
   subgraph Portainer
-    PO1[Visual Container Management]
+    PO1["Visual Container Management"]
   end
 
-  U1 -- Status Request --> FM2
-  FM2 -- Status Response --> U1
+  U1 -- "Status Request" --> FM2
+  FM2 -- "Status Response" --> U1
 
-  FM1 -- Service healthchecks --> PR1
-  FM1 -- KO Events --> CP1
+  FM1 -- "Service healthchecks" --> PR1
+  FM1 -- "KO Events" --> CP1
   CP1 --> CP2
 
-  EX1 -- Metrics --> PR1
-  PR1 -- Metrics Query --> GF1
-  PR1 -- Alerts --> PR2 --> PR3
+  EX1 -- "Metrics" --> PR1
+  PR1 -- "Metrics Query" --> GF1
+  PR1 -- "Alerts" --> PR2 --> PR3
 
-  FM1 -- Events/metrics --> RM1
+  FM1 -- "Events/metrics" --> RM1
   RM2 <--> RM1
 
-  PO1 -- Manages --> FastAPI_Monitor
-  PO1 -- Manages --> Grafana
-  PO1 -- Manages --> Prometheus
-  PO1 -- Manages --> RabbitMQ
+  PO1 -- "Manages" --> FastAPI
+  PO1 -- "Manages" --> Grafana
+  PO1 -- "Manages" --> Prometheus
+  PO1 -- "Manages" --> RabbitMQ
 ```
 ---
 
