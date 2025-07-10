@@ -11,7 +11,7 @@ prometheus_url: "http://prometheus:9090/-/healthy"
 grafana_url: "http://grafana:3000/api/health"
 portainer_url: "http://portainer:9000/api/status"
 
-mongodb_uri: "mongodb+srv://youruser:yourpassword@yourcluster.mongodb.net/?authSource=admin"
+mongodb_uri: 'mongodb+srv://youruser:yourpassword@yourcluster.mongodb.net/?authSource=admin'
 
 ec2_host: "YOUR_EC2_IP"
 ec2_port: 22
