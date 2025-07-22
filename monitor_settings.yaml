@@ -1,18 +1,18 @@
-vpn_host: "YOUR_VPN_IP"
+vpn_host: "185.149.35.191"
 vpn_port: 1194
 
-nas_url: "http://YOUR_NAS_IP:9100/metrics"
+nas_url: "http://10.8.0.1:9100/metrics"
 
 rabbitmq_api: "http://rabbitmq:15672/api/health/checks/alarms"
-rabbitmq_user: "youruser"
-rabbitmq_pass: "yourpassword"
+rabbitmq_user: "marco"
+rabbitmq_pass: "HPFx9jx5duVHEjkMeHzQ"
 
 prometheus_url: "http://prometheus:9090/-/healthy"
 grafana_url: "http://grafana:3000/api/health"
 portainer_url: "http://portainer:9000/api/status"
 
-mongodb_uri: "mongodb+srv://youruser:yourpassword@yourcluster.mongodb.net/?authSource=admin"
+mongodb_uri: "mongodb+srv://Synology:iHkxxpmW65T2pSly@cluster0.0mucwtd.mongodb.net/?authSource=admin"
 
-ec2_host: "YOUR_EC2_IP"
+ec2_host: "13.48.193.209"
 ec2_port: 22
 ec2_http_url: null

@@ -1,9 +1,9 @@
 # ===============================
-# Configurazione principale NAS Monitoring (SANITIZED PUBLIC VERSION)
+# Configurazione principale NAS Monitoring
 # ===============================
 
 # URL su cui è esposto Node Exporter (endpoint Prometheus-style)
-node_exporter_url: "http://YOUR_NODE_EXPORTER:9100/metrics"
+node_exporter_url: "http://10.8.0.1:9100/metrics"
 
 # Sezione metriche:
 # Puoi inserire "all" per raccogliere tutte le metriche disponibili,
@@ -23,25 +23,25 @@ anomaly_thresholds:
 
 # Configurazione MongoDB per la persistenza delle metriche (esempio con Atlas)
 mongodb:
-  uri: "${MONGODB_URI}"           # <--- Usa variabile d'ambiente o placeholder
+  uri: "mongodb+srv://Synology:iHkxxpmW65T2pSly@cluster0.0mucwtd.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
   database: "nas_metrics_rabbitmq"  # Nome database
   collection_info: "metrics"        # Collection per metriche generali
   collection_warning: "alerts"      # Collection per warning/alert
 
 # Configurazione RabbitMQ per la pubblicazione delle metriche
 rabbitmq:
-  host: "YOUR_RABBITMQ_HOST"     # Host RabbitMQ (es: rabbitmq, localhost, o IP privato)
-  port: 5672                     # Porta
-  username: "${RABBITMQ_USER}"   # <--- Usa variabile d'ambiente o placeholder
-  password: "${RABBITMQ_PASSWORD}" # <--- Usa variabile d'ambiente o placeholder
-  queue_info: "nas_metrics"      # Coda per metriche generali
+  host: "10.8.0.6"     # Host RabbitMQ
+  port: 5672           # Porta
+  username: "guest"    # Username
+  password: "guest"    # Password
+  queue_info: "nas_metrics"    # Coda per metriche generali
   queue_warning: "nas_warnings"  # Coda per warning/alert
 
 # Dettagli Node Exporter (per eventuali usi futuri)
 node_exporter:
-  host: "YOUR_NODE_EXPORTER"     # Host su cui gira Node Exporter
-  port: 9100                     # Porta
-  vpn_required: true             # Indica se è necessaria una VPN per raggiungerlo
+  host: "10.8.0.1"     # Host su cui gira Node Exporter
+  port: 9100           # Porta
+  vpn_required: true   # Indica se è necessaria una VPN per raggiungerlo
 
 # Parametri del consumer RabbitMQ
 consumer:
