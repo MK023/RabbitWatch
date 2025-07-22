@@ -58,3 +58,9 @@ dump/
 # Misc
 *.swp
 *.swo
+
+# Config files
+*.cfg
+*.yml
+*.yaml
+*.ini
