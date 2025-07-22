@@ -49,6 +49,10 @@ config/*.secrets
 config/*.env
 *.env
 .env.*
+*.cfg
+*.yml
+*.yaml
+*.ini
 
 # MongoDB dumps/backups
 dump/
@@ -58,9 +62,3 @@ dump/
 # Misc
 *.swp
 *.swo
-
-# Config files
-*.cfg
-*.yml
-*.yaml
-*.ini
