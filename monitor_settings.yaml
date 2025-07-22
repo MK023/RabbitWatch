@@ -11,7 +11,11 @@ prometheus_url: "http://prometheus:9090/-/healthy"
 grafana_url: "http://grafana:3000/api/health"
 portainer_url: "http://portainer:9000/api/status"
 
+<<<<<<< HEAD
 mongodb_uri: "mongodb+srv://Synology:iHkxxpmW65T2pSly@cluster0.0mucwtd.mongodb.net/?authSource=admin"
+=======
+mongodb_uri: 'mongodb+srv://youruser:yourpassword@yourcluster.mongodb.net/?authSource=admin'
+>>>>>>> d98094cc77e05bd0dee70a3258446654f6439af2
 
 ec2_host: "13.48.193.209"
 ec2_port: 22
