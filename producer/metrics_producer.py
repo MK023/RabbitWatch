@@ -1,271 +1,363 @@
+# ===============================
+# Producer NAS Monitoring - Migliorie best practice e robustezza
+# ===============================
+
 import yaml
 import time
 import logging
-from logging.handlers import RotatingFileHandler
 import requests
 import pika
 import json
-import re
 import sys
 import argparse
-from typing import Dict, Any, List, Union, Optional
+import re
+import uuid
+import signal
+import threading
+import csv
+from typing import Dict, Any, Optional, Tuple, List
+
+# --- Configurazione e logging ---
 
 def load_config(path: str) -> Dict[str, Any]:
-    """Carica la configurazione YAML dal percorso fornito, esce se fallisce."""
+    """Carica la configurazione YAML."""
     try:
         with open(path) as f:
             return yaml.safe_load(f)
     except Exception as e:
-        logging.critical(f"Errore caricamento config '{path}': {e}")
+        logging.critical(f"Errore caricamento config '{path}': {e}", exc_info=True)
         sys.exit(1)
 
-def validate_config(config: dict) -> None:
-    """Verifica che tutte le chiavi fondamentali siano presenti nella configurazione."""
-    required = [
-        "rabbitmq", "metrics", "node_exporter_url", "retry"
-    ]
-    for key in required:
-        if key not in config:
-            logging.critical(f"Chiave mancante nella configurazione: {key}")
-            sys.exit(1)
-    for queue in ["queue_info", "queue_warning"]:
-        if queue not in config["rabbitmq"]:
-            logging.critical(f"Chiave mancante in rabbitmq: {queue}")
-            sys.exit(1)
-    for rk in ["attempts", "delay_seconds"]:
-        if rk not in config["retry"]:
-            logging.critical(f"Chiave mancante in retry: {rk}")
-            sys.exit(1)
-
-def setup_logger(logfile: str, max_bytes: int, backup_count: int, log_to_console: bool = False) -> None:
-    """Configura il logger rotativo e opzionalmente la console."""
-    logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
-    handler = RotatingFileHandler(logfile, maxBytes=max_bytes, backupCount=backup_count)
-    handler.setFormatter(formatter)
-    logger.handlers = []
-    logger.addHandler(handler)
-    if log_to_console:
-        stream_handler = logging.StreamHandler()
-        stream_handler.setFormatter(formatter)
-        logger.addHandler(stream_handler)
-
-def match_metric(line: str, patterns: List[str]) -> bool:
-    """True se la linea corrisponde ad almeno uno dei pattern/regex forniti."""
-    for pattern in patterns:
-        try:
-            if any(x in pattern for x in "^$.*+?[](){}|"):
-                if re.match(pattern, line):
-                    return True
-            else:
-                if line.startswith(pattern):
-                    return True
-        except re.error:
-            if line.startswith(pattern):
-                return True
-    return False
-
-def get_metrics(node_exporter_url: str, metrics: Union[list, str], attempts: int, delay: int) -> Dict[str, Any]:
-    """
-    Recupera e filtra le metriche da Node Exporter.
-    Supporta sia 'all' (tutte le metriche), sia una lista di nomi/regEx.
-    """
-    for attempt in range(1, attempts+1):
-        try:
-            resp = requests.get(node_exporter_url, timeout=5)
-            resp.raise_for_status()
-            data = resp.text
-            result: Dict[str, Any] = {}
-
-            # Prendi tutte le righe valide (no commenti o vuote)
-            all_lines = [l for l in data.splitlines() if l and not l.startswith("#")]
-
-            # Modalità 'all'
-            if metrics == "all":
-                for line in all_lines:
-                    parts = line.split()
-                    if len(parts) == 2:
-                        key, value = parts
-                        try:
-                            result[key] = float(value)
-                        except Exception:
-                            continue
-                return result
-
-            # Modalità lista
-            for metric in metrics:
-                lines = [l for l in all_lines if match_metric(l, [metric])]
-                if not lines:
-                    logging.warning(f"Metrica '{metric}' non trovata in Node Exporter")
-                    continue
-
-                if re.match(r"^node_cpu_seconds_total", metric):
-                    try:
-                        idle = sum(float(re.findall(r"\s(\d+\.\d+)$", l)[0]) for l in lines if 'mode="idle"' in l)
-                        total = sum(float(re.findall(r"\s(\d+\.\d+)$", l)[0]) for l in lines)
-                        cpu_usage = 100 * (1 - idle/total) if total > 0 else 0
-                        result["cpu_usage_percent"] = round(cpu_usage, 2)
-                    except Exception as e:
-                        logging.warning(f"Parsing CPU fallito: {e}")
-
-                elif metric in ["node_memory_MemAvailable_bytes", "node_memory_MemFree_bytes"]:
-                    field = "mem_available" if "Available" in metric else "mem_free"
-                    try:
-                        value = float(lines[0].split()[-1])
-                        result[field] = value
-                    except Exception:
-                        logging.warning(f"Parsing fallito per {metric}")
-
-                elif metric in ["node_filesystem_avail_bytes", "node_filesystem_size_bytes"]:
-                    root = [l for l in lines if 'mountpoint="/"' in l]
-                    if root:
-                        key = "disk_avail" if "avail" in metric else "disk_size"
-                        try:
-                            result[key] = float(root[0].split()[-1])
-                        except Exception:
-                            logging.warning(f"Parsing fallito per {metric}")
-
-            # Percentuali RAM/disco
-            mem_total_line = next((l for l in all_lines if l.startswith("node_memory_MemTotal_bytes")), None)
-            if "mem_available" in result and mem_total_line:
-                try:
-                    mem_total = float(mem_total_line.split()[-1])
-                    used = 100 * (1 - result["mem_available"] / mem_total)
-                    result["memory_usage_percent"] = round(used, 2)
-                except Exception:
-                    pass
-            elif "mem_free" in result and mem_total_line:
-                try:
-                    mem_total = float(mem_total_line.split()[-1])
-                    used = 100 * (1 - result["mem_free"] / mem_total)
-                    result["memory_usage_percent"] = round(used, 2)
-                except Exception:
-                    pass
-            if "disk_avail" in result and "disk_size" in result:
-                try:
-                    free = 100 * (result["disk_avail"] / result["disk_size"])
-                    result["disk_free_percent"] = round(free, 2)
-                except Exception:
-                    pass
-            return result
-        except Exception as e:
-            logging.error(f"Errore recupero metriche Node Exporter (tentativo {attempt}): {e}")
-            time.sleep(delay)
-    logging.error("Impossibile recuperare metriche da Node Exporter dopo vari tentativi")
-    return {}
-
-def send_to_rabbitmq(rabbit_conf: dict, queue: str, message: dict, attempts: int, delay: int, log_level=logging.INFO) -> bool:
-    """
-    Invia un messaggio a RabbitMQ nella coda specificata.
-    Riprova in caso di errore.
-    """
-    for attempt in range(1, attempts+1):
-        try:
-            credentials = pika.PlainCredentials(rabbit_conf["username"], rabbit_conf["password"])
-            parameters = pika.ConnectionParameters(
-                host=rabbit_conf["host"],
-                port=rabbit_conf.get("port", 5672),
-                virtual_host=rabbit_conf.get("vhost", "/"),
-                credentials=credentials,
-                heartbeat=30
-            )
-            with pika.BlockingConnection(parameters) as connection:
-                channel = connection.channel()
-                channel.queue_declare(queue=queue, durable=True)
-                channel.basic_publish(
-                    exchange='',
-                    routing_key=queue,
-                    body=json.dumps(message)
-                )
-            logging.log(log_level, f"Messaggio inviato a RabbitMQ su '{queue}': {message}")
-            return True
-        except Exception as e:
-            logging.error(f"Errore invio a RabbitMQ '{queue}' (tentativo {attempt}): {e}")
-            time.sleep(delay)
-    logging.error(f"Impossibile inviare messaggio a RabbitMQ '{queue}' dopo vari tentativi")
-    return False
-
-def check_anomalies(metrics: dict, thresholds: dict) -> Dict[str, Any]:
-    """
-    Controlla quali metriche superano le soglie di allarme.
-    Per 'free' (RAM/disco): allarme se < soglia. Per le altre: allarme se > soglia.
-    """
-    anomalies = {}
-    for key, threshold in thresholds.items():
-        value = metrics.get(key)
-        if value is not None:
-            if "free" in key:
-                if value < threshold:
-                    anomalies[key] = value
-            else:
-                if value > threshold:
-                    anomalies[key] = value
-    return anomalies
-
-def metrics_changed(current: dict, previous: Optional[dict]) -> bool:
-    """True se almeno una metrica è cambiata rispetto alla raccolta precedente."""
-    if previous is None:
-        return True
-    return any(current.get(k) != previous.get(k) for k in current)
-
-def main():
-    parser = argparse.ArgumentParser(description="Producer metrics RabbitMQ")
-    parser.add_argument("-c", "--config", default="config_all.yaml", help="Percorso file configurazione YAML")
-    parser.add_argument("--console-log", action="store_true", help="Attiva log anche su console")
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    validate_config(config)
-    logconf = config.get("logging", {})
-    setup_logger(
-        logconf.get("producer_logfile", "metrics_producer.log"),
-        logconf.get("log_max_bytes", 1048576),
-        logconf.get("log_backup_count", 3),
-        log_to_console=args.console_log
+def setup_logger(logfile: Optional[str] = None):
+    """Setup logging: su file se specificato, altrimenti su console."""
+    handlers = [logging.StreamHandler()]
+    if logfile:
+        handlers.append(logging.FileHandler(logfile))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=handlers
     )
 
-    prev_metrics: Optional[dict] = None
-    poll_interval = config.get("poll_interval_seconds") or config.get("producer", {}).get("push_interval_seconds", 60)
-    while True:
-        metrics = get_metrics(
-            config["node_exporter_url"],
-            config["metrics"],
-            config["retry"]["attempts"],
-            config["retry"]["delay_seconds"]
-        )
-        if not metrics:
-            logging.warning("Nessuna metrica raccolta, salta invio.")
-            time.sleep(poll_interval)
-            continue
+# --- Parsing metriche ---
 
-        if metrics_changed(metrics, prev_metrics):
-            send_to_rabbitmq(
-                config["rabbitmq"],
-                config["rabbitmq"]["queue_info"],
-                {
-                    "type": "metrics",
-                    "payload": metrics
-                },
-                config["retry"]["attempts"],
-                config["retry"]["delay_seconds"],
-                log_level=logging.INFO
+def parse_labels(labels_str: str) -> Dict[str, str]:
+    """Parsa labels Prometheus (gestisce virgole/uguali nei valori)."""
+    if not labels_str:
+        return {}
+    # Usa csv reader per parsing robusto di label="value"
+    reader = csv.reader([labels_str], delimiter=',', quotechar='"')
+    labels = {}
+    for parts in reader:
+        for part in parts:
+            if '=' in part:
+                k, v = part.split('=', 1)
+                labels[k.strip()] = v.strip().strip('"')
+    return labels
+
+def parse_metric_line(line: str) -> Optional[Tuple[str, Dict[str, str], float]]:
+    """Parsa una linea di metrica Prometheus in: nome, labels, valore."""
+    metric_re = re.compile(
+        r'^([a-zA-Z0-9_:]+)(\{([^}]*)\})?\s+([-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?)$'
+    )
+    match = metric_re.match(line.strip())
+    if not match:
+        return None
+    name = match.group(1)
+    labels = parse_labels(match.group(3))
+    value = float(match.group(4))
+    return (name, labels, value)
+
+def get_all_metrics(node_exporter_url: str, extra_metrics: Optional[Dict[str, float]] = None) -> Dict[str, float]:
+    """Scarica tutte le metriche da Node Exporter, restituisce dict."""
+    result: Dict[str, float] = {}
+    try:
+        resp = requests.get(node_exporter_url, timeout=5)
+        resp.raise_for_status()
+        for line in resp.text.splitlines():
+            if line and not line.startswith("#"):
+                parsed = parse_metric_line(line)
+                if parsed is None:
+                    continue
+                name, labels, value = parsed
+                if labels:
+                    label_str = ",".join([f'{k}="{v}"' for k, v in sorted(labels.items())])
+                    full_key = f'{name}{{{label_str}}}'
+                    result[full_key] = value
+                # Aggiungi chiave semplice solo se non già presente
+                if name not in result:
+                    result[name] = value
+        # Eventuali metriche aggiuntive custom
+        if extra_metrics:
+            result.update(extra_metrics)
+    except Exception as e:
+        logging.error(f"Errore recupero metriche Node Exporter: {e}", exc_info=True)
+    return result
+
+# --- Batching e gestione payload ---
+
+FRAME_MAX = 131072  # Limite di RabbitMQ (128KB), default
+
+def chunk_dict(metrics: Dict[str, float], max_bytes: int = FRAME_MAX) -> List[Dict[str, float]]:
+    """
+    Suddivide un dict di metriche in batch con payload JSON < max_bytes.
+    Restituisce lista di batch.
+    """
+    items = list(metrics.items())
+    batches = []
+    batch = {}
+    for k, v in items:
+        batch[k] = v
+        payload = json.dumps(batch, separators=(',', ':')).encode('utf-8')
+        if len(payload) > max_bytes:
+            batch.pop(k)
+            if batch:
+                batches.append(batch.copy())
+            batch = {k: v}
+    if batch:
+        payload = json.dumps(batch, separators=(',', ':')).encode('utf-8')
+        if len(payload) <= max_bytes:
+            batches.append(batch.copy())
+        else:
+            logging.warning(f"Batch singolo troppo grande, scartato: chiave {list(batch.keys())[:1]}")
+    return batches
+
+def generate_batch_id() -> str:
+    """Genera batch_id univoco per ogni batch."""
+    return str(uuid.uuid4())
+
+def log_batch_discarded(batch_id: str, reason: str, batch: dict):
+    """Logga batch scartato su file o console."""
+    logging.warning(
+        f"BATCH SCARTATO: batch_id={batch_id}, motivo={reason}, size={len(json.dumps(batch))}"
+    )
+
+# --- Invio RabbitMQ ottimizzato (connessione persistente con retry) ---
+
+class RabbitMQSender:
+    def __init__(self, rabbit_conf: dict, attempts: int = 3, delay_seconds: int = 5):
+        self.rabbit_conf = rabbit_conf
+        self.attempts = attempts
+        self.delay_seconds = delay_seconds
+        self.connection = None
+        self.channel = None
+
+    def connect(self):
+        heartbeat = self.rabbit_conf.get("heartbeat", 60)
+        for attempt in range(1, self.attempts + 1):
+            try:
+                credentials = pika.PlainCredentials(self.rabbit_conf["username"], self.rabbit_conf["password"])
+                parameters = pika.ConnectionParameters(
+                    host=self.rabbit_conf["host"],
+                    port=self.rabbit_conf.get("port", 5672),
+                    virtual_host=self.rabbit_conf.get("vhost", "/"),
+                    credentials=credentials,
+                    heartbeat=heartbeat
+                )
+                self.connection = pika.BlockingConnection(parameters)
+                self.channel = self.connection.channel()
+                # Dichiara le code all'avvio
+                self.channel.queue_declare(queue=self.rabbit_conf["queue_info"], durable=True)
+                self.channel.queue_declare(queue=self.rabbit_conf["queue_warning"], durable=True)
+                logging.info("Connessione RabbitMQ stabilita.")
+                return True
+            except Exception as e:
+                logging.error(f"Errore connessione RabbitMQ: {e}, tentativo={attempt}", exc_info=True)
+                time.sleep(self.delay_seconds)
+        logging.critical("Fallita la connessione RabbitMQ dopo tutti i tentativi.")
+        return False
+
+    def send(self, queue: str, message: dict, batch_id: str, extra_headers: Optional[dict] = None):
+        if not self.channel or self.connection.is_closed:
+            logging.warning("Connessione RabbitMQ persa, provo a riconnettere...")
+            if not self.connect():
+                logging.error(f"Impossibile riconnettere per invio batch_id={batch_id}")
+                return False
+        try:
+            headers = {"batch_id": batch_id}
+            if extra_headers:
+                headers.update(extra_headers)
+            props = pika.BasicProperties(headers=headers)
+            self.channel.basic_publish(
+                exchange='',
+                routing_key=queue,
+                body=json.dumps(message, separators=(',', ':')),
+                properties=props
             )
-            prev_metrics = metrics.copy()
-        anomalies = check_anomalies(metrics, config.get("anomaly_thresholds", {}))
-        if anomalies:
-            send_to_rabbitmq(
-                config["rabbitmq"],
-                config["rabbitmq"]["queue_warning"],
-                {
-                    "type": "alert",
-                    "payload": anomalies
-                },
-                config["retry"]["attempts"],
-                config["retry"]["delay_seconds"],
-                log_level=logging.WARNING
-            )
-        time.sleep(poll_interval)
+            logging.info(f"Batch inviato: batch_id={batch_id}, queue={queue}, size={len(json.dumps(message))}")
+            return True
+        except Exception as e:
+            logging.error(f"Errore invio a RabbitMQ '{queue}': {e}, batch_id={batch_id}", exc_info=True)
+            # Prova a riconnettere e ritenta una volta
+            self.connect()
+            try:
+                self.channel.basic_publish(
+                    exchange='',
+                    routing_key=queue,
+                    body=json.dumps(message, separators=(',', ':')),
+                    properties=props
+                )
+                logging.info(f"Batch inviato dopo riconnessione: batch_id={batch_id}, queue={queue}")
+                return True
+            except Exception as e2:
+                logging.error(f"Fallito invio dopo riconnessione: {e2}, batch_id={batch_id}", exc_info=True)
+                return False
+
+    def close(self):
+        try:
+            if self.connection and self.connection.is_open:
+                self.connection.close()
+                logging.info("Connessione RabbitMQ chiusa.")
+        except Exception as e:
+            logging.error(f"Errore chiusura connessione RabbitMQ: {e}", exc_info=True)
+
+# --- Gestione anomalie e soglie ---
+
+def parse_threshold_key(th_key: str) -> Tuple[str, Dict[str, str]]:
+    """Parsa una chiave soglia: es 'metric{label="x"}'."""
+    m = re.match(r'^([^{]+)(\{(.*)\})?$', th_key.strip())
+    if not m:
+        return (th_key, {})
+    name = m.group(1)
+    labels = parse_labels(m.group(3))
+    return (name, labels)
+
+def match_metric(metrics: Dict[str, float], name: str, labels: Dict[str, str]) -> Optional[Tuple[str, float]]:
+    """Trova la metrica corrispondente a nome+labels."""
+    if labels:
+        label_str = ",".join([f'{k}="{v}"' for k, v in sorted(labels.items())])
+        key = f'{name}{{{label_str}}}'
+        if key in metrics:
+            return (key, metrics[key])
+    if name in metrics:
+        return (name, metrics[name])
+    return None
+
+def check_anomalies(metrics: dict, thresholds: dict) -> Dict[str, Any]:
+    """Verifica anomalie sulle metriche rispetto alle soglie."""
+    anomalies = {}
+    for th_key, threshold in thresholds.items():
+        name, labels = parse_threshold_key(th_key)
+        matched = match_metric(metrics, name, labels)
+        if not matched:
+            continue
+        key, value = matched
+        # Soglie invertite per alcune metriche
+        if ("disk_free_percent" in key or
+            "entropy_available_bits" in key or
+            "filefd_maximum" in key):
+            if value < threshold:
+                anomalies[key] = value
+        else:
+            if value > threshold:
+                anomalies[key] = value
+        if ("network_up" in key or "up" in key) and value == threshold:
+            anomalies[key] = value
+    return anomalies
+
+# --- Main loop ottimizzato, shutdown sicuro ---
+
+class GracefulKiller:
+    """Gestisce SIGINT/SIGTERM per uno shutdown pulito."""
+    kill_now = False
+
+    def __init__(self):
+        signal.signal(signal.SIGINT, self.exit_gracefully)
+        signal.signal(signal.SIGTERM, self.exit_gracefully)
+
+    def exit_gracefully(self, signum, frame):
+        self.kill_now = True
+        logging.info("Ricevuto segnale di terminazione, esco...")
+
+def run_metrics_producer(config: dict, config_path: str):
+    poll_interval = config.get("poll_interval_seconds", 180)
+    node_exporter_url = config["node_exporter_url"]
+    extra_metrics = config.get("extra_metrics", None)
+    logging.info(f"User config file: {config_path}")
+    logging.info(f"Node Exporter URL: {node_exporter_url}")
+    logging.info(f"RabbitMQ Host: {config['rabbitmq']['host']} Port: {config['rabbitmq'].get('port',5672)}")
+
+    attempts = config.get("retry", {}).get("attempts", 3)
+    delay_seconds = config.get("retry", {}).get("delay_seconds", 5)
+
+    sender = RabbitMQSender(config["rabbitmq"], attempts=attempts, delay_seconds=delay_seconds)
+    if not sender.connect():
+        logging.critical("Impossibile stabilire connessione RabbitMQ: esco.")
+        sys.exit(2)
+
+    killer = GracefulKiller()
+    try:
+        while not killer.kill_now:
+            metrics = get_all_metrics(node_exporter_url, extra_metrics=extra_metrics)
+            if not metrics:
+                logging.warning("Nessuna metrica raccolta, salta invio.")
+            else:
+                # --- Invio metriche: batching ---
+                batches = chunk_dict(metrics, FRAME_MAX)
+                for batch in batches:
+                    batch_id = generate_batch_id()
+                    payload = {
+                        "type": "metrics",
+                        "payload": batch
+                    }
+                    size_bytes = len(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+                    if size_bytes <= FRAME_MAX:
+                        ok = sender.send(
+                            config["rabbitmq"]["queue_info"],
+                            payload,
+                            batch_id,
+                            extra_headers={
+                                "timestamp": int(time.time()),
+                                "source": "producer_nas"
+                            }
+                        )
+                        if not ok:
+                            logging.error(f"Invio batch non riuscito: batch_id={batch_id}")
+                    else:
+                        log_batch_discarded(batch_id, "batch troppo grande (metrics)", batch)
+
+                # --- Invio anomalie (alert): batching ---
+                anomalies = check_anomalies(metrics, config.get("anomaly_thresholds", {}))
+                if anomalies:
+                    anomaly_batches = chunk_dict(anomalies, FRAME_MAX)
+                    for anomaly_batch in anomaly_batches:
+                        batch_id = generate_batch_id()
+                        payload = {
+                            "type": "alert",
+                            "payload": anomaly_batch
+                        }
+                        size_bytes = len(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+                        if size_bytes <= FRAME_MAX:
+                            ok = sender.send(
+                                config["rabbitmq"]["queue_warning"],
+                                payload,
+                                batch_id,
+                                extra_headers={
+                                    "timestamp": int(time.time()),
+                                    "source": "producer_nas"
+                                }
+                            )
+                            if not ok:
+                                logging.error(f"Invio alert non riuscito: batch_id={batch_id}")
+                        else:
+                            log_batch_discarded(batch_id, "batch troppo grande (anomalies)", anomaly_batch)
+
+            for _ in range(poll_interval):
+                if killer.kill_now:
+                    break
+                time.sleep(1)
+    finally:
+        sender.close()
+
+# --- Avvio main ---
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Producer metrics RabbitMQ NAS ottimizzato (label-aware, batching, header, logging, retry, connessione persistente, shutdown sicuro)")
+    parser.add_argument("-c", "--config", default="config_producer.yaml", help="Percorso file configurazione YAML")
+    parser.add_argument("--logfile", default=None, help="File di log (opzionale)")
+    args = parser.parse_args()
+
+    setup_logger(args.logfile)
+    config = load_config(args.config)
+    run_metrics_producer(config, args.config)
