@@ -11,6 +11,7 @@ import socket
 import os
 import threading
 import time
+from datetime import datetime  # PATCH: aggiunto per il timestamp
 
 # --- Config: caricamento e validazione --- #
 def load_config(path: str) -> Dict[str, Any]:
@@ -62,6 +63,9 @@ def mongo_connect(mongo_conf: dict):
         sys.exit(1)
 
 def save_to_mongo(db, collection_name: str, message: dict) -> bool:
+    # PATCH: inserisce timestamp se non presente
+    if "timestamp" not in message:
+        message["timestamp"] = int(datetime.utcnow().timestamp())
     try:
         db[collection_name].insert_one(message)
         logging.info(f"[OK] Documento salvato su MongoDB: collection='{collection_name}', body={message}")

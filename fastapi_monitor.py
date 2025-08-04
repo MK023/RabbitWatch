@@ -1,62 +1,111 @@
-"""
-Monitoraggio servizi con FastAPI + thread automatico:
-- Espone endpoint API REST per controllo e stato servizi (/monitor)
-- Esegue i check in automatico ogni N secondi, tentando recovery se necessario
-- In caso di servizio giù, chiama il Control Plane (CPController) per recovery/escalation
-"""
-
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
-import threading
-import time
-import socket
+#=====IMPORT NECESSARI=====#
+import os
+import sys
+import signal
+import logging
+import json
 import requests
+import yaml
+from fastapi import FastAPI
 from pymongo import MongoClient
 from requests.auth import HTTPBasicAuth
-import yaml
 
-# --- INTEGRAZIONE CONTROL PLANE ---
-from cp_core.controller import CPController
-cp = CPController()
-# -----------------------------------
-
+#=====COSTANTE FILE DI CONFIGURAZIONE=====#
 SETTINGS_FILE = "monitor_settings.yaml"
 
+#=====FUNZIONE PER IL LOGGING=====#
+def log_event(level, message, **kwargs):
+    extra = kwargs if kwargs else None
+    if level == "info":
+        logger.info(message, extra=extra)
+    elif level == "warning":
+        logger.warning(message, extra=extra)
+    elif level == "error":
+        logger.error(message, extra=extra)
+    elif level == "debug":
+        logger.debug(message, extra=extra)
+    else:
+        logger.info(message, extra=extra)
+
+#=====FUNZIONE PER CARICARE LA CONFIGURAZIONE=====#
 def load_config(filename):
     """
     Carica la configurazione YAML dal file specificato.
     """
-    with open(filename, "r") as f:
-        return yaml.safe_load(f)
+    try:
+        with open(filename, "r") as f:
+            return yaml.safe_load(f)
+    except Exception as e:
+        log_event("error", f"Errore nel caricamento della configurazione: {e}")
+        return {}
 
-# Carica la configurazione all'avvio dell'applicazione
+#=====CARICAMENTO DELLA CONFIGURAZIONE=====#
 CONFIG = load_config(SETTINGS_FILE)
 
-# Istanzia l'applicazione FastAPI
+#=====CREAZIONE DELL'OGGETTO FASTAPI=====#
 app = FastAPI()
 
-def check_tcp(host, port, timeout=3):
+#=====DEFINIZIONE DEL PATH DEL FILE PID=====#
+PID_FILE = "/home/ubuntu/monitoring/pid.txt"
+
+#=====SETUP LOGGING AVANZATO (FORMATO JSON PER FILEBEAT)=====#
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "timestamp": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "logger": record.name,
+        }
+        if record.args and isinstance(record.args, dict):
+            log_record.update(record.args)
+        if record.exc_info:
+            log_record["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_record)
+
+logger = logging.getLogger("fastapi_monitor")
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(JsonFormatter())
+logger.addHandler(handler)
+# Se vuoi loggare anche su file, decommenta le 2 righe sotto:
+# file_handler = logging.FileHandler("/home/ubuntu/monitoring/monitor.log")
+# file_handler.setFormatter(JsonFormatter()); logger.addHandler(file_handler)
+
+#=====FUNZIONE PER SCRIVERE IL PID DEL PROCESSO IN UN FILE=====#
+def write_pid_file(pid_file=PID_FILE):
     """
-    Verifica la raggiungibilità TCP di un host/porta.
+    Scrive il PID del processo corrente in un file.
+    """
+    pid = os.getpid()
+    with open(pid_file, "w") as f:
+        f.write(str(pid))
+    log_event("info", "PID file scritto", pid=pid, path=pid_file)
+
+#=====FUNZIONE PER TERMINARE IL PROCESSO USANDO IL PID NEL FILE=====#
+def terminate_process_by_pidfile(pid_file=PID_FILE):
+    """
+    Termina il processo il cui PID è scritto nel pid_file con SIGKILL -9.
+    Utile per killare il processo da riga di comando.
     """
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except Exception:
-        return False
+        with open(pid_file, "r") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGKILL)
+        log_event("info", "Processo terminato con SIGKILL -9", pid=pid)
+    except Exception as e:
+        log_event("error", "Errore terminazione processo", error=str(e), pid_file=pid_file)
 
+#=====FUNZIONE CHECK HTTP GENERICA=====#
 def check_http(url, auth=None, timeout=3):
     """
-    Effettua una richiesta HTTP GET.
+    Effettua una richiesta HTTP GET e solleva eccezione se la risposta non è 2xx.
     """
-    try:
-        resp = requests.get(url, auth=auth, timeout=timeout)
-        if resp.status_code == 200:
-            return True
-        return False
-    except Exception:
-        return False
+    resp = requests.get(url, auth=auth, timeout=timeout)
+    resp.raise_for_status()
+    return True   
 
+#=====FUNZIONE CHECK MONGODB=====#
 def check_mongodb(uri, timeout=3):
     """
     Verifica la raggiungibilità di MongoDB tramite il driver pymongo.
@@ -68,114 +117,88 @@ def check_mongodb(uri, timeout=3):
     except Exception:
         return False
 
-def send_to_cp(source, status, extra=None):
+#=====CHECK RABBITMQ (API HTTP CON AUTENTICAZIONE BASE)=====#
+def verifica_rabbitmq(status):
     """
-    Costruisce un evento e lo invia al CPController per decidere se intervenire e gestire recovery/escalation.
+    Controlla lo stato di RabbitMQ tramite API HTTP.
     """
-    event = {
-        "source": source,
-        "status": "ok" if status == "ok" else "critical"  # Mappa "ko" su "critical"
-    }
-    if extra:
-        event.update(extra)
-    result = cp.receive_event(event)
-    print(f"[CP] {source} => {result}")
-    return result
+    try:
+        check_http(
+            CONFIG["rabbitmq_api"],
+            auth=HTTPBasicAuth(CONFIG["rabbitmq_user"], CONFIG["rabbitmq_pass"])
+        )
+        status["rabbitmq"] = "ok"
+    except Exception as e:
+        status["rabbitmq"] = "error"
+        status["rabbitmq_detail"] = str(e)
 
-def monitor_services():
+#=====CHECK PROMETHEUS=====#
+def verifica_prometheus(status):
     """
-    Esegue tutti i check definiti nella config.
-    In caso di problemi, invia evento al Control Plane.
-    Ritorna lo stato aggregato di tutti i servizi.
+    Controlla lo stato di Prometheus.
     """
+    try:
+        check_http(CONFIG["prometheus"])
+        status["prometheus"] = "ok"
+    except Exception as e:
+        status["prometheus"] = "error"
+        status["prometheus_detail"] = str(e)
+
+#=====CHECK GRAFANA=====#
+def verifica_grafana(status):
+    """
+    Controlla lo stato di Grafana.
+    """
+    try:
+        check_http(CONFIG["grafana"])
+        status["grafana"] = "ok"
+    except Exception as e:
+        status["grafana"] = "error"
+        status["grafana_detail"] = str(e)
+
+#=====CHECK PORTAINER=====#
+def verifica_portainer(status):
+    """
+    Controlla lo stato di Portainer.
+    """
+    try:
+        check_http(CONFIG["portainer"])
+        status["portainer"] = "ok"
+    except Exception as e:
+        status["portainer"] = "error"
+        status["portainer_detail"] = str(e)
+
+#=====ENDPOINT FASTAPI: HOME=====#
+@app.get("/")
+def home():
+    """
+    Endpoint base.
+    """
+    return {"message": "Home RabbitWatch"}
+
+#=====ENDPOINT FASTAPI: HEALTHCHECK=====#
+@app.get("/health")
+def healthcheck():
+    """
+    Effettua i check di stato di tutti i servizi monitorati.
+    """
+    log_event("info", "Healthcheck richiesto.")
     status = {}
-
-    # VPN (TCP check)
-    s = "ok" if check_tcp(CONFIG["vpn_host"], CONFIG["vpn_port"]) else "ko"
-    status["vpn"] = s
-    if s != "ok":
-        send_to_cp("vpn", s)
-
-    # NAS (HTTP check)
-    s = "ok" if check_http(CONFIG["nas_url"]) else "ko"
-    status["nas"] = s
-    if s != "ok":
-        send_to_cp("nas", s)
-
-    # RabbitMQ (API HTTP check con autenticazione base)
-    s = "ok" if check_http(
-        CONFIG["rabbitmq_api"], 
-        auth=HTTPBasicAuth(CONFIG["rabbitmq_user"], CONFIG["rabbitmq_pass"])
-    ) else "ko"
-    status["rabbitmq"] = s
-    if s != "ok":
-        send_to_cp("rabbitmq", s)
-
-    # Prometheus (HTTP check, non critico)
-    s = "ok" if check_http(CONFIG["prometheus_url"]) else "ko"
-    status["prometheus"] = s
-    if s != "ok":
-        send_to_cp("prometheus", s)
-
-    # Grafana (HTTP check, non critico)
-    s = "ok" if check_http(CONFIG["grafana_url"]) else "ko"
-    status["grafana"] = s
-    if s != "ok":
-        send_to_cp("grafana", s)
-
-    # Portainer (HTTP check, non critico)
-    s = "ok" if check_http(CONFIG["portainer_url"]) else "ko"
-    status["portainer"] = s
-    if s != "ok":
-        send_to_cp("portainer", s)
-
-    # MongoDB (connessione driver)
-    s = "ok" if check_mongodb(CONFIG["mongodb_uri"]) else "ko"
-    status["mongodb"] = s
-    if s != "ok":
-        send_to_cp("mongodb", s)
-
-    # EC2 (TCP check)
-    s = "ok" if check_tcp(CONFIG["ec2_host"], CONFIG["ec2_port"]) else "ko"
-    status["ec2_tcp"] = s
-    if s != "ok":
-        send_to_cp("ec2", s)
-
-    # EC2 (HTTP check opzionale, se specificato in config)
-    if CONFIG.get("ec2_http_url"):
-        s = "ok" if check_http(CONFIG["ec2_http_url"]) else "ko"
-        status["ec2_http"] = s
-        if s != "ok":
-            send_to_cp("ec2", s, extra={"check": "http"})
-
-    # Verifica se tutti i servizi critici sono OK
-    critical = ["vpn", "nas", "rabbitmq", "mongodb", "ec2_tcp"]
-    all_critical_ok = all(status.get(s) == "ok" for s in critical)
-    status["all_critical_ok"] = all_critical_ok
-
+    verifica_rabbitmq(status)
+    verifica_prometheus(status)
+    verifica_grafana(status)
+    verifica_portainer(status)
     return status
 
-@app.get("/monitor")
-def monitor():
-    """
-    Endpoint API per vedere lo stato servizi (e triggerare controllo manuale).
-    """
-    status = monitor_services()
-    return JSONResponse(content=status)
-
-def scheduler_loop(interval=60):
-    """
-    Thread di monitoraggio automatico: esegue i check ogni 'interval' secondi.
-    """
-    while True:
-        print("[MONITOR] Controllo automatico...")
-        monitor_services()
-        time.sleep(interval)
-
+#=====BLOCCO PRINCIPALE: AVVIO O KILL=====#
 if __name__ == "__main__":
-    # Avvia il thread del monitor automatico all'avvio del servizio
-    t = threading.Thread(target=scheduler_loop, args=(60,), daemon=True)  # ogni 60 secondi
-    t.start()
-
+    #=====GESTIONE DA TERMINALE: KILL SE SPECIFICATO=====#
+    if len(sys.argv) > 1 and sys.argv[1] == "kill":
+        terminate_process_by_pidfile()
+        sys.exit(0)
+    #=====AVVIO NORMALE DEL MONITOR=====#
+    write_pid_file(PID_FILE)
+    log_event("info", "Monitor avviato.", mode="main")
+    #=====AVVIO DEL SERVER UVICORN (SOLO SE L'APPLICAZIONE È LANCIATA DIRETTAMENTE)=====#
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)
