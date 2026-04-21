@@ -8,9 +8,14 @@ Gestione robusta: warning su servizi nuovi, thread-safe, error logging.
 Autore: MK023 + Copilot
 """
 
+import logging
 import os
 import threading
+
 from cp_core.recovery import RecoveryManager
+
+logger = logging.getLogger(__name__)
+
 
 class CPController:
     def __init__(self):
@@ -35,7 +40,7 @@ class CPController:
         # Warning su source non noto
         with self.lock:
             if source not in self.known_sources:
-                print(f"[WARNING] Nuovo servizio sconosciuto ricevuto: '{source}'. Uso soglie default.")
+                logger.warning("Unknown source '%s' — falling back to default escalation thresholds.", source)
                 self.known_sources.add(source)
 
         if status == "ok":
@@ -84,9 +89,9 @@ class CPController:
         else:
             msg = f"NOTIFICA: WARNING da {source} (status: {status})"
 
-        print(f"[NOTIFICA] {msg}")
+        logger.info("%s", msg)
         try:
             with open("logs/cp.log", "a") as logf:
                 logf.write(msg + "\n")
-        except Exception as e:
-            print(f"[ERROR] Impossibile scrivere su log: {e}")
+        except OSError as e:
+            logger.error("Unable to write to logs/cp.log: %s", e)
