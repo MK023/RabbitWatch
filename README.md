@@ -1,135 +1,155 @@
-# 🚀 Super Monitor & Control Plane Stack
+# RabbitWatch
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.116-009688.svg)](https://fastapi.tiangolo.com/)
+[![Prometheus](https://img.shields.io/badge/Prometheus-metrics-E6522C.svg)](https://prometheus.io/)
+[![RabbitMQ](https://img.shields.io/badge/RabbitMQ-event--bus-FF6600.svg)](https://www.rabbitmq.com/)
+[![Security Policy](https://img.shields.io/badge/security-policy-brightgreen.svg)](./SECURITY.md)
+
+> **Self-healing monitoring stack: FastAPI health checks + Prometheus/Grafana/Alertmanager + RabbitMQ event bus, with automated recovery for cloud/on-prem infrastructure.**
+
+RabbitWatch is a small, opinionated control-plane that keeps your critical services (VPN, NAS, message brokers, databases, dashboards, VMs) **up and self-healing**. A FastAPI service runs periodic checks; when something fails, events flow through RabbitMQ to a Control Plane (`CPController`) that decides whether to retry, recover, or escalate — and pushes the resulting metrics to Prometheus/Grafana.
+
+It is designed as a **drop-in observability + recovery layer** for small-to-medium Linux fleets that can't justify a full commercial APM, but still need actionable alerting and hands-off remediation.
 
 ---
 
-## 🇬🇧 English
+## Architecture
 
-### Description
-
-**Super Monitor & Control Plane Stack** is a complete open source solution for **active monitoring and automated recovery management** for your cloud, on-premise, or hybrid infrastructure.
-
-A FastAPI service performs periodic health checks on all your critical services (VPN, NAS, RabbitMQ, database, Prometheus, Grafana, Portainer, VM, and more). If a problem is detected, it triggers automatic recovery or escalation via a centralized Control Plane (CPController).
-
-This project integrates leading OSS tools for monitoring (Prometheus, Grafana, Alertmanager, exporters), event management (RabbitMQ), visualization (Grafana, Portainer), and provides a ready-to-extend base for enterprise deployments.  
-**Looking for a plug & play, transparent, extensible, and secure monitoring and self-healing system? You’re in the right place!**
-
----
-
-### 🗺️ Architecture Diagram
 ```mermaid
-flowchart TD
-  subgraph User
-    U1["User (Admin/DevOps)"]
+flowchart LR
+  U["Admin / DevOps"] -->|"GET /monitor"| API
+
+  subgraph API["FastAPI Monitor"]
+    HC["Periodic health checks<br/>(TCP · HTTP · MongoDB)"]
+    EP["REST endpoint /monitor"]
   end
 
-  subgraph FastAPI
-    FM1["Automatic thread, TCP/HTTP/MongoDB checks"]
-    FM2["API /monitor"]
+  HC -->|"KO events"| CP
+  subgraph CP["Control Plane"]
+    CTRL["CPController<br/>classification"]
+    REC["Recovery / escalation"]
+    CTRL --> REC
   end
 
-  subgraph CP
-    CP1["Receives KO events"]
-    CP2["Recovery/Escalation"]
+  HC -->|"events + metrics"| MQ
+  subgraph MQ["RabbitMQ"]
+    QS["queues"]
+    PC["Python producer / consumer"]
+    QS <--> PC
   end
 
-  subgraph Prometheus
-    PR1["Scrapes Exporters & Monitor"]
-    PR2["Alert Rules"]
-    PR3["Alertmanager"]
+  PC -->|"write"| DB[("MongoDB<br/>metrics history")]
+
+  subgraph OBS["Observability"]
+    EX["Node + MongoDB<br/>exporters"]
+    PR["Prometheus"]
+    AM["Alertmanager"]
+    GF["Grafana<br/>dashboards"]
+    EX --> PR --> GF
+    PR --> AM
   end
 
-  subgraph Exporters
-    EX1["Node/MongoDB Exporter"]
-  end
-
-  subgraph RabbitMQ
-    RM1["Event/metrics queues"]
-    RM2["Producer/Consumer Python"]
-  end
-
-  subgraph Grafana
-    GF1["Dashboards"]
-  end
-
-  subgraph Portainer
-    PO1["Visual Container Management"]
-  end
-
-  U1 -- "Status Request" --> FM2
-  FM2 -- "Status Response" --> U1
-
-  FM1 -- "Service healthchecks" --> PR1
-  FM1 -- "KO Events" --> CP1
-  CP1 --> CP2
-
-  EX1 -- "Metrics" --> PR1
-  PR1 -- "Metrics Query" --> GF1
-  PR1 -- "Alerts" --> PR2 --> PR3
-
-  FM1 -- "Events/metrics" --> RM1
-  RM2 <--> RM1
-
-  PO1 -- "Manages" --> FastAPI
-  PO1 -- "Manages" --> Grafana
-  PO1 -- "Manages" --> Prometheus
-  PO1 -- "Manages" --> RabbitMQ
+  HC -.->|"scrape"| PR
+  PO["Portainer"] -.->|"manages"| API
+  PO -.->|"manages"| MQ
+  PO -.->|"manages"| OBS
 ```
----
-
-### Features
-
-- **FastAPI Custom Monitor:** Active health checks, REST API & automatic background thread.
-- **Control Plane Integration:** Automated recovery/escalation via pluggable CPController.
-- **Prometheus & Alertmanager:** Metrics collection, custom rules, and alerting.
-- **Grafana:** Beautiful dashboards.
-- **RabbitMQ (+ exporters):** Event-driven metrics architecture.
-- **MongoDB Exporter:** Database health and metrics.
-- **Portainer:** Visual container management.
-- **Python Producer/Consumer:** Metrics collection, push and recovery logic.
-- **Secure, modular, production ready.**
 
 ---
 
-### Quick Start
+## Features
 
-1. **Create the Docker network (first time only):**
+- **Active health checks** — TCP, HTTP (with basic auth), and MongoDB reachability against a YAML-declared set of endpoints.
+- **Event-driven recovery** — failures are published to RabbitMQ; the `CPController` decides on retry / escalation strategy without blocking the check loop.
+- **Metrics pipeline** — a Python producer pushes structured metrics to MongoDB (with TTL indexes for retention) and to Prometheus via exporters; Grafana visualizes them.
+- **Background thread** — health checks run continuously without external schedulers; the REST endpoint just exposes the latest aggregate.
+- **Portainer-friendly** — every component is a standalone container managed via `docker-compose`; Portainer gives a visual UI if you want one.
+- **Extensible** — add a new service type by extending `fastapi_monitor.py` and the YAML schema.
+- **Hardenable** — deployment guidance and threat model are documented in [SECURITY.md](./SECURITY.md).
+
+---
+
+## Stack
+
+| Layer | Component |
+|---|---|
+| HTTP monitor + REST API | FastAPI, Uvicorn, `requests` |
+| Event bus | RabbitMQ + exporters |
+| Metrics store | MongoDB + MongoDB exporter |
+| Metrics collection | Prometheus + Alertmanager |
+| Visualization | Grafana |
+| Orchestration | Docker Compose + systemd |
+| Container management | Portainer (optional) |
+
+Pinned Python dependencies live in [`requirements.txt`](./requirements.txt). Container versions are pinned in `docker-compose.yml`.
+
+---
+
+## Quick start
+
+> Prerequisites: Docker (+ Compose plugin), a Linux host with at least 2 GB RAM, and one free port for the monitor (default `8000`).
+
+1. **Create the Docker network** (first run only):
+
    ```sh
    docker network create monitoring
    ```
 
-2. **Configure settings:**
+2. **Copy and edit the config**:
+
    ```sh
    cp monitor_settings.example.yaml monitor_settings.yaml
-   # Edit monitor_settings.yaml with your endpoints and credentials
+   # then edit monitor_settings.yaml with your endpoints and credentials
    ```
 
-3. **Bring everything up:**
+3. **Bring the stack up**:
+
    ```sh
    docker compose up -d
    ```
 
-4. **(Optional) Build & run the FastAPI monitor:**
+4. **Hit the monitor**:
+
    ```sh
-   docker build -t fastapi-monitor .
-   docker run --network=monitoring -p 8000:8000 -v $(pwd)/monitor_settings.yaml:/app/monitor_settings.yaml:ro fastapi-monitor
+   curl http://localhost:8000/monitor
    ```
-   _Or let Docker Compose manage it!_
+
+   Sample response:
+
+   ```json
+   {
+     "vpn": "ok",
+     "nas": "ok",
+     "rabbitmq": "ok",
+     "prometheus": "ok",
+     "grafana": "ok",
+     "portainer": "ok",
+     "mongodb": "ok",
+     "ec2_tcp": "ok",
+     "all_critical_ok": true
+   }
+   ```
+
+If `all_critical_ok` is `false`, the failing service name is the field to check, and a KO event will have already been published to RabbitMQ for the Control Plane to handle.
 
 ---
 
-### What can you monitor?
+## What you can monitor out of the box
 
-- VPN and tunnels (TCP)
-- NAS and file servers (HTTP)
-- RabbitMQ queues (API + exporter)
-- Prometheus, Grafana, Portainer (API/health)
-- MongoDB (native driver)
-- EC2 VM (TCP + HTTP)
-- Anything else! Extend `monitor_settings.yaml` and `fastapi_monitor.py`.
+- VPNs and tunnels (TCP reachability)
+- NAS and file servers (HTTP endpoints)
+- RabbitMQ queues (management API + exporter)
+- Prometheus, Grafana, Portainer (health APIs)
+- MongoDB clusters (native driver)
+- EC2 or any VM (TCP + optional HTTP)
+
+Anything else is one extension of `monitor_settings.yaml` + one check function in `fastapi_monitor.py` away.
 
 ---
 
-### Example configuration
+## Configuration example
 
 ```yaml
 vpn_host: "YOUR_VPN_IP"
@@ -142,8 +162,8 @@ rabbitmq_user: "youruser"
 rabbitmq_pass: "yourpassword"
 
 prometheus_url: "http://prometheus:9090/-/healthy"
-grafana_url: "http://grafana:3000/api/health"
-portainer_url: "http://portainer:9000/api/status"
+grafana_url:    "http://grafana:3000/api/health"
+portainer_url:  "http://portainer:9000/api/status"
 
 mongodb_uri: "mongodb+srv://youruser:yourpassword@yourcluster.mongodb.net/?authSource=admin"
 
@@ -152,46 +172,15 @@ ec2_port: 22
 ec2_http_url: null
 ```
 
----
-
-### API Example
-
-```sh
-curl http://localhost:8000/monitor
-```
-
-Sample response:
-
-```json
-{
-  "vpn": "ok",
-  "nas": "ok",
-  "rabbitmq": "ok",
-  "prometheus": "ok",
-  "grafana": "ok",
-  "portainer": "ok",
-  "mongodb": "ok",
-  "ec2_tcp": "ok",
-  "all_critical_ok": true
-}
-```
+> **Never commit** the real `monitor_settings.yaml`. The repo `.gitignore` already excludes `*.yaml` and `*.env` to prevent accidental leaks. Treat the `*.example.yaml` files as templates only — their values are placeholders, not defaults.
 
 ---
 
-### Security & Best Practices
-
-- **DO NOT** commit `monitor_settings.yaml` with real credentials.
-- Secure Grafana, RabbitMQ, and Portainer with strong passwords.
-- Backup persistent directories (`./grafana_data`, `./prometheus_data`, etc.).
-- Consider HTTPS and firewalling for production.
-
----
-
-### Example systemd unit for Python consumer
+## Running the Python consumer as a systemd service
 
 ```ini
 [Unit]
-Description=Metrics Consumer Python Service
+Description=RabbitWatch metrics consumer
 After=network.target openvpn-client@VPNConfig.service
 Requires=openvpn-client@VPNConfig.service
 
@@ -210,207 +199,60 @@ WantedBy=multi-user.target
 
 ---
 
-### Repository structure
+## Repository layout
 
-- `docker-compose.yml` — all containers orchestration
-- `fastapi_monitor.py` — monitoring logic & REST API
-- `monitor_settings.example.yaml` — config template
-- `Dockerfile` — custom monitor build
-- `requirements.txt` — Python deps
-- `grafana_data/`, `prometheus_data/`, `rabbitmq/`, etc. — persistent
-- `config_all.yaml` — Python producer/consumer config example
-- ...and much more!
-
----
-
-### Tips
-
-- **Add more exporters/services:** Edit `docker-compose.yml` and the YAML config.
-- **Debug containers:**  
-  ```sh
-  docker compose logs -f
-  ```
-- **Customize healthchecks:** Edit `fastapi_monitor.py` and rebuild.
-
----
-
-## 🎉 Celebrate your first release!
-
-You’ve built a modern, extensible, and secure stack.  
-If you like this project, ⭐️ star it and share!
-
----
-
-## 📖 License
-
-MIT (or your own policy)
-
----
-
-## 👤 Author
-
-🎈 **MK023**  
-_2025 - Happy Monitoring!_
-
----
-
-## 🇮🇹 Italiano
-
-### Descrizione
-
-**Super Monitor & Control Plane Stack** è una soluzione open source completa per il **monitoraggio attivo e la gestione automatica dei servizi** in ambienti cloud, on-premise o ibridi.
-
-Il cuore del sistema è un servizio FastAPI che esegue healthcheck periodici su tutti i servizi critici (VPN, NAS, RabbitMQ, database, Prometheus, Grafana, Portainer, VM, ecc.) e, in caso di problemi, attiva recovery o escalation tramite un Control Plane centralizzato (CPController).
-
-Il progetto integra i migliori tool OSS per il monitoring (Prometheus, Grafana, Alertmanager, exporter vari), la gestione eventi (RabbitMQ), la visualizzazione (Grafana, Portainer) e offre una base pronta per estendere la tua architettura verso produzioni enterprise.  
-**Se cerchi un sistema plug & play, trasparente, estendibile e sicuro per monitorare e autogestire la tua infrastruttura… sei nel posto giusto!**
-
----
-
-### 🗺️ Schema Architetturale
-
-*(Vedi sopra, lo schema è universale)*
-
----
-
-### Cosa include
-
-- **FastAPI Custom Monitor:** Health check attivi, API REST, thread automatico.
-- **Control Plane Integration:** Recovery ed escalation via CPController (modulare!)
-- **Prometheus & Alertmanager:** Metriche, regole personalizzate, allarmi.
-- **Grafana:** Dashboard visive e potenti.
-- **RabbitMQ (+ exporter):** Code/eventi per architetture event-driven.
-- **MongoDB Exporter:** Metriche e salute database.
-- **Portainer:** Gestione visuale dei container.
-- **Producer/Consumer Python:** Raccolta, invio, gestione metriche e recovery.
-- **Sicurezza, modularità, best practice.**
-
----
-
-### Quickstart
-
-1. **Crea la Docker network (solo la prima volta):**
-   ```sh
-   docker network create monitoring
-   ```
-
-2. **Configura i parametri:**
-   ```sh
-   cp monitor_settings.example.yaml monitor_settings.yaml
-   # Modifica monitor_settings.yaml con i tuoi endpoint e credenziali
-   ```
-
-3. **Avvia tutto:**
-   ```sh
-   docker compose up -d
-   ```
-
-4. **(Opzionale) Builda il monitor FastAPI:**
-   ```sh
-   docker build -t fastapi-monitor .
-   docker run --network=monitoring -p 8000:8000 -v $(pwd)/monitor_settings.yaml:/app/monitor_settings.yaml:ro fastapi-monitor
-   ```
-   _Oppure lascia che ci pensi Docker Compose!_
-
----
-
-### Cosa puoi monitorare?
-
-- VPN e tunnel (TCP)
-- NAS e file server (HTTP)
-- Code RabbitMQ (API + exporter)
-- Prometheus, Grafana, Portainer (API/health)
-- MongoDB (driver nativo)
-- VM EC2 (TCP + HTTP)
-- E molto altro! Estendi `monitor_settings.yaml` e `fastapi_monitor.py`
-
----
-
-### Esempio configurazione
-
-*(Vedi sopra, uguale)*
-
----
-
-### Esempio API
-
-```sh
-curl http://localhost:8000/monitor
 ```
-
-Risposta tipica:
-
-```json
-{
-  "vpn": "ok",
-  "nas": "ok",
-  "rabbitmq": "ok",
-  "prometheus": "ok",
-  "grafana": "ok",
-  "portainer": "ok",
-  "mongodb": "ok",
-  "ec2_tcp": "ok",
-  "all_critical_ok": true
-}
+.
+├── fastapi_monitor.py    # active health checks + REST /monitor
+├── api/                  # thin FastAPI wiring
+├── agents/               # check agents (CLI demo)
+├── cp_core/              # Control Plane: controller + recovery logic
+├── consumer/             # RabbitMQ consumer + MongoDB TTL indexes
+├── producer/             # metrics producer pushing to RabbitMQ
+├── service/              # systemd / service integration helpers
+├── script/               # one-off operational scripts
+├── docs/                 # additional documentation
+├── requirements.txt      # pinned Python deps
+├── SECURITY.md           # threat model + reporting
+└── README.md
 ```
 
 ---
 
-### Sicurezza & Best Practice
+## Security
 
-- **NON** committare `monitor_settings.yaml` con credenziali reali.
-- Proteggi Grafana, RabbitMQ, Portainer con password forti.
-- Backup delle directory persistenti (`./grafana_data`, `./prometheus_data`, ecc.).
-- Per produzione usa HTTPS e firewall.
+See [SECURITY.md](./SECURITY.md) for the threat model, in-scope / out-of-scope definitions, deployment hardening guidance, and the private reporting channel for vulnerabilities.
 
----
+The short version:
 
-### Esempio unit systemd
-
-*(Vedi sopra, uguale)*
+- Run RabbitWatch **behind a trusted network boundary** (VPN, VPC, or Cloudflare Tunnel) — the `/monitor` endpoint is not currently authenticated.
+- **Rotate every credential** from the example configs before production.
+- Grant the MongoDB user least-privilege access to the metrics database only.
 
 ---
 
-### Struttura repository
+## Troubleshooting
 
-- `docker-compose.yml` — orchestrazione container
-- `fastapi_monitor.py` — logica monitor & REST
-- `monitor_settings.example.yaml` — template configurazione
-- `Dockerfile` — build monitor custom
-- `requirements.txt` — dipendenze Python
-- `grafana_data/`, ecc. — dati persistenti
-- `config_all.yaml` — esempio producer/consumer Python
-- ...e molto altro!
+- **Stack won't start**: `docker compose logs -f` — most issues are either a missing `monitoring` Docker network or a placeholder still sitting in `monitor_settings.yaml`.
+- **`/monitor` returns `ok` but Grafana is empty**: check Prometheus is scraping the exporters (`/targets` page), and that the consumer is running (systemd status or the container log).
+- **Alertmanager silent**: verify `alertmanager.yml` is mounted into the container and `docker compose restart alertmanager` after edits.
 
 ---
 
-### Consigli utili
+## Roadmap
 
-- **Aggiungi exporter/servizi:** Modifica `docker-compose.yml` e la YAML config.
-- **Debug:**  
-  ```sh
-  docker compose logs -f
-  ```
-- **Custom check:** Personalizza `fastapi_monitor.py` e rebuilda.
+- [ ] Optional API-key or mTLS authentication on `/monitor`
+- [ ] GitHub Actions CI: ruff + pip-audit + bandit on every PR
+- [ ] Dependabot configuration for weekly dependency hygiene
+- [ ] Helm chart for Kubernetes deployments (currently Docker Compose only)
 
 ---
 
-## 🎉 Celebra la tua prima pubblicazione!
+## License
 
-Hai creato un’infrastruttura moderna, estendibile e sicura.  
-Se ti piace questo progetto, ⭐️ mettilo tra i preferiti e condividilo!
+Released under the [MIT License](./LICENSE).
 
----
+## Author
 
-## 📖 Licenza
-
-MIT (o come da policy)
-
----
-
-## 👤 Autore
-
-🎈 **MK023**  
-_2025 - Happy Monitoring!_
-
----
+**Marco Bellingeri** ([MK023](https://github.com/MK023)) — Cloud Platform & Security Engineer.
+Contributions, issues, and discussions are welcome.
