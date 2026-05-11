@@ -15,6 +15,28 @@ It is designed as a **drop-in observability + recovery layer** for small-to-medi
 
 ---
 
+## Why
+
+Built to solve a real problem: keeping a small Linux fleet (VPN, NAS, RabbitMQ, MongoDB, Grafana) up and self-healing — without paying for a commercial APM like Datadog or New Relic. RabbitWatch is the drop-in observability + recovery layer I wanted to exist for small-to-medium fleets that can't justify enterprise tooling but still need actionable alerting and hands-off remediation.
+
+The architecture intentionally mirrors enterprise patterns (event-driven decoupling via RabbitMQ, Prometheus/Grafana standard stack, separation between check logic and recovery logic) — proving the same design ideas work at hobby scale and at production scale, with no architectural rewrite in between.
+
+---
+
+## Operating cost
+
+Designed for **minimal self-hosting** — runs on a single small VPS:
+
+| Component | Cost | Notes |
+|---|---|---|
+| Linux host (1 vCPU / 2 GB RAM) | ~$5/month | Any small VPS — Hetzner CX11, Vultr, OVH Eco |
+| All containers (FastAPI, RabbitMQ, Prometheus, Grafana, MongoDB, Portainer) | $0 | Self-hosted via Docker Compose |
+| Optional: Cloudflare Tunnel | Free | If you want HTTPS without exposing ports |
+
+The whole stack fits in ~1.5 GB RAM. The point isn't to compete with $50+/month commercial APMs on features — it's to demonstrate that the same architectural patterns (event-driven, separation of concerns, exporters + scrape model) can run on a single $5 VM when you do the engineering yourself.
+
+---
+
 ## Architecture
 
 ```mermaid
