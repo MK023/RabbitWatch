@@ -7,7 +7,7 @@ colorama==0.4.6
 dnspython==2.7.0
 fastapi==0.116.0
 h11==0.16.0
-idna==3.10
+idna==3.15
 pydantic==2.11.7
 pydantic_core==2.33.2
 pymongo==4.13.2
